@@ -8,7 +8,7 @@ from keras.layers import BatchNormalization, Activation, ZeroPadding2D, Add
 from keras.layers.advanced_activations import PReLU, LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.applications import VGG19
-from keras.models import Sequential, Model
+from keras.models import Sequential, Model, load_model
 from keras.optimizers import Adam
 import datetime
 import matplotlib.pyplot as plt
@@ -16,6 +16,8 @@ import sys
 from data_loader import DataLoader
 import numpy as np
 import os
+import cv2
+
 
 import keras.backend as K
 
@@ -23,11 +25,11 @@ class SRGAN():
     def __init__(self):
         # Input shape
         self.channels = 3
-        self.lr_height = 64                 # Low resolution height
-        self.lr_width = 64                  # Low resolution width
-        self.lr_shape = (self.lr_height, self.lr_width, self.channels)
-        self.hr_height = self.lr_height*4   # High resolution height    256
-        self.hr_width = self.lr_width*4     # High resolution width     256
+        self.lr_height = 256                 # Low resolution height
+        self.lr_width = 256                # Low resolution width
+        self.lr_shape = (None, None, self.channels)
+        self.hr_height = self.lr_height*4   # High resolution height
+        self.hr_width = self.lr_width*4     # High resolution width
         self.hr_shape = (self.hr_height, self.hr_width, self.channels)
 
         # Number of residual blocks in the generator
@@ -44,7 +46,8 @@ class SRGAN():
             metrics=['accuracy'])
 
         # Configure data loader
-        self.dataset_name = 'img_align_celeba'
+        # self.dataset_name = 'daVinci/daVinci/train/image_1'
+        self.dataset_name = 'surgical_images'
         self.data_loader = DataLoader(dataset_name=self.dataset_name,
                                       img_res=(self.hr_height, self.hr_width))
 
@@ -88,8 +91,8 @@ class SRGAN():
 
 
     def build_vgg(self):
-        """ the
-        Builds a pre-trained VGG19 model that outputs image features extracted at
+        """
+        Builds a pre-trained VGG19 model that outputs image features extracted at the
         third block of the model
         """
         vgg = VGG19(weights="imagenet")
@@ -124,23 +127,26 @@ class SRGAN():
             return u
 
         # Low resolution image input
-        img_lr = Input(shape=self.lr_shape)
+        img_lr = Input(shape=(None,None,self.channels)) #64*64
+
         # Pre-residual block
-        c1 = Conv2D(64, kernel_size=9, strides=1, padding='same')(img_lr)
-        c1 = Activation('relu')(c1)
+        c1 = Conv2D(64, kernel_size=9, strides=1, padding='same')(img_lr) #64*64
+        c1 = Activation('relu')(c1) #64*64
 
         # Propogate through residual blocks
         r = residual_block(c1, self.gf)
         for _ in range(self.n_residual_blocks - 1):
             r = residual_block(r, self.gf)
+
         # Post-residual block
-        c2 = Conv2D(64, kernel_size=3, strides=1, padding='same')(r)
+        c2 = Conv2D(64, kernel_size=3, strides=1, padding='same')(r)  #64*64
         c2 = BatchNormalization(momentum=0.8)(c2)
         c2 = Add()([c2, c1])
 
         # Upsampling
-        u1 = deconv2d(c2)
-        u2 = deconv2d(u1)
+        u1 = deconv2d(c2) #128*128
+        u2 = deconv2d(u1) #256*256
+
         # Generate high resolution output
         gen_hr = Conv2D(self.channels, kernel_size=9, strides=1, padding='same', activation='tanh')(u2)
 
@@ -174,6 +180,11 @@ class SRGAN():
 
         return Model(d0, validity)
 
+    def test(self):
+      self.generator = load_model('./saved_model/9950 model.h5')
+      self.sample_images(1)
+
+    
     def train(self, epochs, batch_size=1, sample_interval=50):
 
         start_time = datetime.datetime.now()
@@ -216,19 +227,26 @@ class SRGAN():
 
             elapsed_time = datetime.datetime.now() - start_time
             # Plot the progress
-            print ("%d time: %s" % (epoch, elapsed_time))
+            print ("%d G_loss: %s" % (epoch, g_loss))
 
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 print("fuck")
                 self.sample_images(epoch)
+                self.generator.save('./saved_model/%d model.h5' % epoch)
 
     def sample_images(self, epoch):
-        os.makedirs('images/%s' % self.dataset_name, exist_ok=True)
+        
+        os.makedirs('TestImages/%s' % self.dataset_name, exist_ok=True)
         r, c = 2, 2
 
         imgs_hr, imgs_lr = self.data_loader.load_data(batch_size=2, is_testing=True)
-        fake_hr = self.generator.predict(imgs_lr)
+        fake_hr = self.generator.predict(imgs_hr)
+        print(fake_hr.shape)
+
+        # fake = fake_hr[0]
+        # print(fake)
+        # cv2.imwrite("TestImages/surgical_images/fake.png",fake)
 
         # Rescale images 0 - 1
         imgs_lr = 0.5 * imgs_lr + 0.5
@@ -245,16 +263,18 @@ class SRGAN():
                 axs[row, col].set_title(titles[col])
                 axs[row, col].axis('off')
             cnt += 1
-        fig.savefig("images/%s/%d.png" % (self.dataset_name, epoch))
+        fig.savefig("TestImages/%s/%d.png" % (self.dataset_name, epoch))
         plt.close()
-
+        
         # Save low resolution images for comparison
         for i in range(r):
             fig = plt.figure()
             plt.imshow(imgs_lr[i])
-            fig.savefig('images/%s/%d_lowres%d.png' % (self.dataset_name, epoch, i))
+            fig.savefig('TestImages/%s/%d_lowres%d.png' % (self.dataset_name, epoch, i))
             plt.close()
 
 if __name__ == '__main__':
+    
     gan = SRGAN()
-    gan.train(epochs=30000, batch_size=1, sample_interval=50)
+    # gan.train(epochs=10000, batch_size=1, sample_interval=50)
+    gan.test()
